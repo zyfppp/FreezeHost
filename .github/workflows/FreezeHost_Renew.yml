@@ -3,7 +3,7 @@ name: FreezeHost 续期
 on:
   schedule:
     - cron: '15 1 4 6 *'   # FREEZEHOST_DISCORD_TOKEN_1 - 下一次: 2026-06-04 13:15 UTC
-    - cron: '32 2 13 6 *'   # FREEZEHOST_DISCORD_TOKEN_2 - 下一次: 2026-06-13 22:32 UTC
+    - cron: '38 2 13 6 *'   # FREEZEHOST_DISCORD_TOKEN_2 - 下一次: 2026-06-13 22:38 UTC
     - cron: '19 3 13 6 *'   # FREEZEHOST_DISCORD_TOKEN_3 - 下一次: 2026-06-13 08:19 UTC
     - cron: '20 4 15 5 *'   # FREEZEHOST_DISCORD_TOKEN_4 - (初始，运行后自动更新)
     - cron: '25 5 20 5 *'   # FREEZEHOST_DISCORD_TOKEN_5 - (初始，运行后自动更新)
