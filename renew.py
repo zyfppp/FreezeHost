@@ -653,12 +653,29 @@ def run():
     if not DISCORD_TOKEN:
         raise RuntimeError("缺少 FREEZEHOST_DISCORD_TOKEN")
 
-    log_info("启动浏览器 (camoufox + WARP 系统级代理)")
+    log_info("启动虚拟显示器 (Xvfb) + camoufox 真实渲染模式")
+
+    # ── 启动 Xvfb 虚拟显示器（headless=False 需要） ──────────────────────────
+    import subprocess, time as _time
+    xvfb_proc = None
+    try:
+        xvfb_proc = subprocess.Popen(
+            ["Xvfb", ":99", "-screen", "0", f"{VIEWPORT_W}x{VIEWPORT_H}x24", "-ac"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _time.sleep(1.5)
+        os.environ["DISPLAY"] = ":99"
+        log_info("Xvfb 已启动 (DISPLAY=:99)")
+    except FileNotFoundError:
+        log_warn("Xvfb 未找到，回退 headless 模式（CF 验证可能失败）")
+        os.environ.pop("DISPLAY", None)
+
+    _use_headless = "DISPLAY" not in os.environ
 
     with Camoufox(
-        headless=True,
-        geoip=True,                          # 自动匹配 IP 的地理位置指纹
-        humanize=True,                       # 模拟人类鼠标移动
+        headless=_use_headless,
+        geoip=True,
+        humanize=True,
         os="linux",
         locale="en-US",
         args=["--no-sandbox", "--disable-dev-shm-usage"],
@@ -668,7 +685,7 @@ def run():
         )
         page = context.new_page()
         page.set_default_timeout(TIMEOUT)
-        log_info("camoufox 浏览器就绪")
+        log_info(f"camoufox 浏览器就绪 (headless={_use_headless})")
 
         display_name = "未知用户"
 
@@ -806,6 +823,11 @@ def run():
                 context.close()
             except Exception:
                 pass
+
+    # ── 关闭 Xvfb ────────────────────────────────────────────────────────────
+    if xvfb_proc is not None:
+        xvfb_proc.terminate()
+        log_info("Xvfb 已关闭")
 
 
 if __name__ == "__main__":
