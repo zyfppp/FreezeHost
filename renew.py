@@ -13,6 +13,13 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
+# ── 可选：playwright-stealth（pip install playwright-stealth）─────────────────
+try:
+    from playwright_stealth import stealth_sync as _stealth_sync
+    _HAS_STEALTH = True
+except ImportError:
+    _HAS_STEALTH = False
+
 DISCORD_TOKEN = os.environ.get("FREEZEHOST_DISCORD_TOKEN", "").strip()
 TG_BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN", "").strip()
 TG_CHAT_ID    = os.environ.get("TG_CHAT_ID", "").strip()
@@ -173,11 +180,11 @@ def take_screenshot(page, name: str) -> bytes | None:
         return None
 
 
-def merge_screenshots(browser, buffers: list[bytes]) -> bytes | None:
+def merge_screenshots(context, buffers: list[bytes]) -> bytes | None:
     if not buffers:
         return None
     log_info("合并截图...")
-    pg = browser.new_page(viewport={"width": VIEWPORT_W, "height": VIEWPORT_H})
+    pg = context.new_page()
     try:
         imgs = "".join(
             f'<img src="data:image/png;base64,{base64.b64encode(b).decode()}" '
@@ -196,6 +203,146 @@ def merge_screenshots(browser, buffers: list[bytes]) -> bytes | None:
         return None
     finally:
         pg.close()
+
+def handle_cloudflare_turnstile(page, timeout_ms: int = 30_000) -> bool:
+    """
+    检测并处理页面上的 Cloudflare Turnstile 人机验证。
+    支持两种形态：
+      1. 全屏安全验证弹窗（/cdn-cgi/challenge-platform 的 iframe）
+      2. 嵌入表单内的 Turnstile widget
+
+    返回 True  — 验证已通过（或页面本就无验证）
+    返回 False — 超时仍未通过
+    """
+    log_info("检测 Cloudflare Turnstile...")
+
+    def _is_turnstile_visible() -> bool:
+        try:
+            return page.evaluate("""() => {
+                // 全屏弹窗：body 里有 CF challenge iframe
+                const iframes = [...document.querySelectorAll('iframe')];
+                const hasCF = iframes.some(f =>
+                    (f.src || '').includes('challenges.cloudflare.com') ||
+                    (f.src || '').includes('/cdn-cgi/challenge-platform') ||
+                    (f.title || '').toLowerCase().includes('cloudflare') ||
+                    (f.id   || '').toLowerCase().includes('cf-')
+                );
+                if (hasCF) return true;
+                // 嵌入式 widget
+                const widget = document.querySelector(
+                    '[class*="cf-turnstile"], [data-sitekey], ' +
+                    '.cf-turnstile, #cf-turnstile'
+                );
+                return !!widget;
+            }""")
+        except Exception:
+            return False
+
+    def _is_token_resolved() -> bool:
+        """检查 Turnstile 是否已成功回填 token（表单内 cf-turnstile-response）"""
+        try:
+            return page.evaluate("""() => {
+                const inp = document.querySelector(
+                    'input[name="cf-turnstile-response"], ' +
+                    'textarea[name="cf-turnstile-response"]'
+                );
+                return !!(inp && inp.value && inp.value.length > 20);
+            }""")
+        except Exception:
+            return False
+
+    def _try_click_checkbox():
+        """尝试点击 Turnstile checkbox（全屏弹窗或嵌入式）"""
+        try:
+            # 先尝试在主 frame 找 checkbox
+            cb = page.locator('input[type="checkbox"]').first
+            if cb.is_visible():
+                cb.click()
+                log_info("点击主 frame checkbox")
+                return True
+        except Exception:
+            pass
+
+        # 遍历所有 iframe，找 CF challenge frame 里的 checkbox
+        for frame in page.frames:
+            try:
+                src = frame.url or ""
+                if not ("challenges.cloudflare.com" in src or
+                        "cdn-cgi" in src or
+                        "turnstile" in src.lower()):
+                    continue
+                cb = frame.locator('input[type="checkbox"]')
+                if cb.count() > 0 and cb.first.is_visible():
+                    cb.first.click()
+                    log_info(f"点击 CF iframe 内 checkbox: {src[:60]}")
+                    return True
+                # 有时候是一个 div/span 模拟的 checkbox
+                for sel in ['[role="checkbox"]', '.cb-lb', '#challenge-stage input',
+                            'label[for*="checkbox"]', 'span[class*="check"]']:
+                    try:
+                        el = frame.locator(sel).first
+                        if el.is_visible():
+                            el.click()
+                            log_info(f"点击 CF iframe 内伪 checkbox ({sel})")
+                            return True
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return False
+
+    # ── 无验证框 → 直接返回 ────────────────────────────────────────────────
+    if not _is_turnstile_visible():
+        log_info("未检测到 Turnstile，跳过")
+        return True
+
+    log_info("检测到 Turnstile，尝试自动处理...")
+    deadline_ms = timeout_ms
+    interval_ms = 2000
+    elapsed = 0
+
+    while elapsed < deadline_ms:
+        # 如果 token 已回填，直接视为通过
+        if _is_token_resolved():
+            log_info("Turnstile token 已回填，验证通过")
+            return True
+
+        # 验证框消失也视为通过
+        if not _is_turnstile_visible():
+            log_info("Turnstile 已消失，验证通过")
+            return True
+
+        # 尝试点击
+        _try_click_checkbox()
+
+        page.wait_for_timeout(interval_ms)
+        elapsed += interval_ms
+
+        # 每隔 10 秒截图辅助 debug
+        if elapsed % 10_000 == 0:
+            take_screenshot(page, f"turnstile-waiting-{elapsed//1000}s")
+
+    log_warn(f"Turnstile 等待超时 ({timeout_ms//1000}s)，验证未通过")
+    take_screenshot(page, "turnstile-timeout")
+    return False
+
+
+def check_cloudflare_turnstile(page) -> bool:
+    """检测页面是否存在 Turnstile（不等待），返回 True 表示存在"""
+    try:
+        return page.evaluate("""() => {
+            const iframes = [...document.querySelectorAll('iframe')];
+            if (iframes.some(f =>
+                (f.src||'').includes('challenges.cloudflare.com') ||
+                (f.src||'').includes('/cdn-cgi/challenge-platform')))
+                return true;
+            return !!(document.querySelector(
+                '[class*="cf-turnstile"],[data-sitekey],.cf-turnstile,#cf-turnstile'
+            ));
+        }""")
+    except Exception:
+        return False
+
 
 def check_site_down(page) -> bool:
     """Detect FreezeHost 'CONNECTION TO THE MANAGEMENT SERVICES LOST' or similar outage screens."""
@@ -457,6 +604,20 @@ def process_server(page, server_id: str) -> dict:
 
         # ── 执行续期 ─────────────────────────────────────
         page.goto(urljoin(page.url, href), wait_until="domcontentloaded")
+
+        # ── Turnstile 人机验证处理 ────────────────────────
+        page.wait_for_timeout(2000)
+        if check_cloudflare_turnstile(page):
+            log_info(f"[{server_id}] 续期页检测到 Turnstile 验证")
+            turnstile_ok = handle_cloudflare_turnstile(page, timeout_ms=45_000)
+            if not turnstile_ok:
+                take_screenshot(page, f"turnstile-failed-{server_id}")
+                result.update(status="error", emoji="❌", status_label="CF验证失败",
+                              detail="Turnstile 人机验证超时未通过")
+                return result
+            # 验证通过后等页面跳转完成
+            page.wait_for_timeout(2000)
+
         try:
             page.wait_for_url(lambda u: "/dashboard" in u or "/server-console" in u, timeout=30000)
         except PlaywrightTimeout:
@@ -501,8 +662,41 @@ def run():
     log_info("启动浏览器 (WARP 系统级代理)")
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": VIEWPORT_W, "height": VIEWPORT_H})
+        browser = pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-dev-shm-usage",
+                "--window-size=1280,753",
+            ],
+        )
+        context = browser.new_context(
+            viewport={"width": VIEWPORT_W, "height": VIEWPORT_H},
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            timezone_id="Asia/Kuala_Lumpur",
+            java_script_enabled=True,
+        )
+        # 隐藏 webdriver 标记
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+        """)
+        page = context.new_page()
+        if _HAS_STEALTH:
+            _stealth_sync(page)
+            log_info("playwright-stealth 已启用")
+        else:
+            log_info("playwright-stealth 未安装，使用内置反检测脚本（建议: pip install playwright-stealth）")
         page.set_default_timeout(TIMEOUT)
         log_info("浏览器就绪")
 
@@ -619,7 +813,7 @@ def run():
 
             # ── 合并截图 ─────────────────────────────────
             final_img = (screenshots[0] if len(screenshots) == 1
-                         else merge_screenshots(browser, screenshots) if screenshots
+                         else merge_screenshots(context, screenshots) if screenshots
                          else None)
 
             # ── TG 推送（完整信息） ──────────────────────
@@ -638,6 +832,7 @@ def run():
             send_tg(f"用户：{display_name}\n❌ 异常: {e}\n\nFreezeHost Auto Renew", buf)
             raise
         finally:
+            context.close()
             browser.close()
 
 
