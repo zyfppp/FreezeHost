@@ -660,11 +660,12 @@ def run():
         geoip=True,                          # 自动匹配 IP 的地理位置指纹
         humanize=True,                       # 模拟人类鼠标移动
         os="linux",
-        viewport={"width": VIEWPORT_W, "height": VIEWPORT_H},
         locale="en-US",
         args=["--no-sandbox", "--disable-dev-shm-usage"],
     ) as browser:
-        context = browser.new_context()
+        context = browser.new_context(
+            viewport={"width": VIEWPORT_W, "height": VIEWPORT_H},
+        )
         page = context.new_page()
         page.set_default_timeout(TIMEOUT)
         log_info("camoufox 浏览器就绪")
