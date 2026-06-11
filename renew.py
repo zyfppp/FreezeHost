@@ -11,14 +11,8 @@ from urllib.request import Request, urlopen
 from urllib.parse import urljoin
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-
-# ── 可选：playwright-stealth（pip install playwright-stealth）─────────────────
-try:
-    from playwright_stealth import stealth_sync as _stealth_sync
-    _HAS_STEALTH = True
-except ImportError:
-    _HAS_STEALTH = False
+from camoufox.sync_api import Camoufox
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 DISCORD_TOKEN = os.environ.get("FREEZEHOST_DISCORD_TOKEN", "").strip()
 TG_BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN", "").strip()
@@ -659,46 +653,21 @@ def run():
     if not DISCORD_TOKEN:
         raise RuntimeError("缺少 FREEZEHOST_DISCORD_TOKEN")
 
-    log_info("启动浏览器 (WARP 系统级代理)")
+    log_info("启动浏览器 (camoufox + WARP 系统级代理)")
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--disable-dev-shm-usage",
-                "--window-size=1280,753",
-            ],
-        )
-        context = browser.new_context(
-            viewport={"width": VIEWPORT_W, "height": VIEWPORT_H},
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="en-US",
-            timezone_id="Asia/Kuala_Lumpur",
-            java_script_enabled=True,
-        )
-        # 隐藏 webdriver 标记
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            window.chrome = { runtime: {} };
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-        """)
+    with Camoufox(
+        headless=True,
+        geoip=True,                          # 自动匹配 IP 的地理位置指纹
+        humanize=True,                       # 模拟人类鼠标移动
+        os="linux",
+        viewport={"width": VIEWPORT_W, "height": VIEWPORT_H},
+        locale="en-US",
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+    ) as browser:
+        context = browser.new_context()
         page = context.new_page()
-        if _HAS_STEALTH:
-            _stealth_sync(page)
-            log_info("playwright-stealth 已启用")
-        else:
-            log_info("playwright-stealth 未安装，使用内置反检测脚本（建议: pip install playwright-stealth）")
         page.set_default_timeout(TIMEOUT)
-        log_info("浏览器就绪")
+        log_info("camoufox 浏览器就绪")
 
         display_name = "未知用户"
 
@@ -832,8 +801,10 @@ def run():
             send_tg(f"用户：{display_name}\n❌ 异常: {e}\n\nFreezeHost Auto Renew", buf)
             raise
         finally:
-            context.close()
-            browser.close()
+            try:
+                context.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
