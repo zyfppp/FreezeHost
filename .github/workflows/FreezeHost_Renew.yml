@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '33 1 14 6 *'   # FREEZEHOST_DISCORD_TOKEN_1 - 下一次: 2026-06-14 06:33 UTC
     - cron: '51 2 23 6 *'   # FREEZEHOST_DISCORD_TOKEN_2 - 下一次: 2026-06-23 01:51 UTC
-    - cron: '01 3 13 6 *'   # FREEZEHOST_DISCORD_TOKEN_3 - 下一次: 2026-06-13 02:01 UTC
+    - cron: '29 3 13 6 *'   # FREEZEHOST_DISCORD_TOKEN_3 - 下一次: 2026-06-13 02:29 UTC
     - cron: '20 4 15 5 *'   # FREEZEHOST_DISCORD_TOKEN_4 - (初始，运行后自动更新)
     - cron: '25 5 20 5 *'   # FREEZEHOST_DISCORD_TOKEN_5 - (初始，运行后自动更新)
   workflow_dispatch:
